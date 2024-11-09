@@ -1,0 +1,6 @@
+[submodule "external/schwabcpp"]
+	path = external/schwabcpp
+	url = https://github.com/willytai/schwabcpp.git
+[submodule "external/DPP"]
+	path = external/DPP
+	url = https://github.com/brainboxdotcc/DPP.git
