@@ -1,4 +1,5 @@
 #include "stockBot.h"
+#include "command.h"
 #include "utils/logger.h"
 #include "nlohmann/json.hpp"
 #include "dpp/dpp.h"
@@ -80,21 +81,8 @@ void Bot::run()
     // create and start the discord bot
     m_dbot = std::make_unique<dpp::cluster>(m_token);
     m_dbot->on_log(dpp::utility::cout_logger());
-    m_dbot->on_slashcommand([this](const dpp::slashcommand_t& event) {
-        if (event.command.get_command_name() == "ping") {
-            event.reply("Pong!");
-        } else if (event.command.get_command_name() == "kill") {
-            event.reply("Killing the bot..");
-            {
-                std::lock_guard lock(m_mutex);
-                m_shouldRun = false;
-            }
-            m_cv.notify_all();
-        }
-    });
-    m_dbot->on_ready(
-        std::bind(&Bot::onDiscordBotReady, this, std::placeholders::_1)
-    );
+    m_dbot->on_slashcommand(std::bind(&Bot::onDiscordBotSlashCommand, this, std::placeholders::_1));
+    m_dbot->on_ready(std::bind(&Bot::onDiscordBotReady, this, std::placeholders::_1));
     m_dbot->start(dpp::st_return);
 
     LOG_INFO("Discord bot started.");
@@ -138,15 +126,67 @@ void Bot::stop()
 
 void Bot::onDiscordBotReady(const dpp::ready_t& event)
 {
+    // register commands
     if (dpp::run_once<struct register_bot_commands>()) {
     
-        dpp::slashcommand ping("ping", "Ping pong!", m_dbot->me.id);
-        dpp::slashcommand kill("kill", "Kills the bot!", m_dbot->me.id);
-        kill.set_default_permissions(dpp::p_administrator);
-        m_dbot->global_bulk_command_create({
-            ping,
-            kill
-        });
+        // usage:
+        // dpp::slashcommand ping(<command name>, <command description>, m_dbot->me.id);
+
+        auto id = m_dbot->me.id;
+
+        std::vector<dpp::slashcommand> commands;
+
+        {
+            dpp::slashcommand command(Command::PING, "Ping pong!", id);
+            commands.push_back(command);
+        }
+
+        {
+            dpp::slashcommand command(Command::KILL, "Kills the bot!", id);
+            command.set_default_permissions(dpp::p_administrator);
+            commands.push_back(command);
+        }
+
+        {
+            dpp::slashcommand command(Command::ALL_ACCOUNT_INFO, "Displays the information of all accounts.", id);
+            commands.push_back(command);
+        }
+
+        m_dbot->global_bulk_command_create(commands);
+    }
+}
+
+void Bot::onDiscordBotSlashCommand(const dpp::slashcommand_t& event)
+{
+    if (event.command.get_command_name() == Command::PING) {
+        event.reply("Pong!");
+    } else if (event.command.get_command_name() == Command::KILL) {
+        event.reply("Killing the bot..");
+        {
+            std::lock_guard lock(m_mutex);
+            m_shouldRun = false;
+        }
+        m_cv.notify_all();
+    } else if (event.command.get_command_name() == Command::ALL_ACCOUNT_INFO) {
+        schwabcpp::AccountsSummaryMap summaryMap = m_client->accountSummary();
+
+        dpp::embed embed = dpp::embed()
+            .set_color(dpp::colors::cyan)
+            .set_title("Accounts Summary")
+            .set_url("https://client.schwab.com/clientapps/accounts/summary/")
+            .set_timestamp(time(0));
+
+        for (const auto& [accountNumber, info] : summaryMap.summary) {
+            embed = embed.add_field(
+                "Account " + accountNumber,
+                "value: " + std::to_string(info.aggregatedBalance.currentLiquidationValue) + "\n" +
+                "cash:  " + std::to_string(info.securitiesAccount.currentBalances.cashAvailableForTrading)
+
+            );
+        }
+
+
+        event.reply(dpp::message(event.command.channel_id, embed));
     }
 }
 

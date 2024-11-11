@@ -33,6 +33,7 @@ private:
 
     // -- Event handlers for the discord bot
     void                                onDiscordBotReady(const dpp::ready_t& event);
+    void                                onDiscordBotSlashCommand(const dpp::slashcommand_t& event);
 
 private:
     std::unique_ptr<dpp::cluster>       m_dbot;  // the discord bot

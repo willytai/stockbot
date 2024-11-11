@@ -15,6 +15,7 @@ include_directories(
     src
     external/schwabcpp/include
     external/schwabcpp/external/spdlog/include
+    external/schwabcpp/external/nlohmann_json/include
     external/DPP/include
 )
 
