@@ -1,5 +1,8 @@
 #include "stockBot.h"
 #include "command.h"
+#include "spdlog/async.h"
+#include "spdlog/sinks/rotating_file_sink.h"
+#include "spdlog/sinks/stdout_color_sinks.h"
 #include "utils/logger.h"
 #include "nlohmann/json.hpp"
 #include "dpp/dpp.h"
@@ -9,6 +12,7 @@
 namespace stockbot {
 
 using json = nlohmann::json;
+using Timer = schwabcpp::Timer;
 
 namespace {
 
@@ -53,6 +57,7 @@ Bot::~Bot()
 
 void Bot::init(const std::filesystem::path& appCredentialPath, LogLevel level)
 {
+    // logger for stockbot
     Logger::init(to_spdlog_log_level(level));
 
     LOG_INFO("Initializing bot..");
@@ -78,9 +83,13 @@ void Bot::run()
     // set the flag
     m_shouldRun = true;
 
+    // create a shared sink logger for the discord bot
+    m_dppLogger = Logger::createWithSharedSinks("dpp");
+    m_dppLogger->set_level(spdlog::level::debug);
+
     // create and start the discord bot
     m_dbot = std::make_unique<dpp::cluster>(m_token);
-    m_dbot->on_log(dpp::utility::cout_logger());
+    m_dbot->on_log(std::bind(&Bot::onDiscordBotLog, this, std::placeholders::_1));
     m_dbot->on_slashcommand(std::bind(&Bot::onDiscordBotSlashCommand, this, std::placeholders::_1));
     m_dbot->on_ready(std::bind(&Bot::onDiscordBotReady, this, std::placeholders::_1));
     m_dbot->start(dpp::st_return);
@@ -88,7 +97,8 @@ void Bot::run()
     LOG_INFO("Discord bot started.");
 
     // start the schwab client
-    m_client = std::make_unique<schwabcpp::Client>(schwabcpp::Client::LogLevel::Trace);
+    // create a shared sink logger for client
+    m_client = std::make_unique<schwabcpp::Client>(Logger::createWithSharedSinks("schwabcpp"));
     m_client->startStreamer();
 
     std::this_thread::sleep_for(std::chrono::seconds(10));
@@ -124,6 +134,31 @@ void Bot::stop()
     }
 }
 
+void Bot::onDiscordBotLog(const dpp::log_t& event)
+{
+    switch (event.severity) {
+        case dpp::ll_trace:
+            m_dppLogger->trace("{}", event.message);
+        break;
+        case dpp::ll_debug:
+            m_dppLogger->debug("{}", event.message);
+        break;
+        case dpp::ll_info:
+            m_dppLogger->info("{}", event.message);
+        break;
+        case dpp::ll_warning:
+            m_dppLogger->warn("{}", event.message);
+        break;
+        case dpp::ll_error:
+            m_dppLogger->error("{}", event.message);
+        break;
+        case dpp::ll_critical:
+        default:
+            m_dppLogger->critical("{}", event.message);
+        break;
+    }
+}
+
 void Bot::onDiscordBotReady(const dpp::ready_t& event)
 {
     // register commands
@@ -152,7 +187,14 @@ void Bot::onDiscordBotReady(const dpp::ready_t& event)
             commands.push_back(command);
         }
 
+        {
+            dpp::slashcommand command(Command::SETUP_RECURRING_INVESTMENT, "Setup a recurring investment.", id);
+            commands.push_back(command);
+        }
+
         m_dbot->global_bulk_command_create(commands);
+
+        LOG_INFO("Discord bot is up and ready.");
     }
 }
 
@@ -185,6 +227,13 @@ void Bot::onDiscordBotSlashCommand(const dpp::slashcommand_t& event)
             );
         }
 
+        event.reply(dpp::message(event.command.channel_id, embed));
+    } else if (event.command.get_command_name() == Command::SETUP_RECURRING_INVESTMENT) {
+        dpp::embed embed = dpp::embed()
+            .set_color(dpp::colors::red)
+            .set_title("Recurring Investment Setup")
+            .set_timestamp(time(0))
+            .add_field("THIS IS CURRENTLY UNDER DEVELOPMENT!!", "---");
 
         event.reply(dpp::message(event.command.channel_id, embed));
     }

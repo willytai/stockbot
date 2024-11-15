@@ -15,6 +15,7 @@ public:
     inline static const std::string PING = "ping";
     inline static const std::string KILL = "kill";
     inline static const std::string ALL_ACCOUNT_INFO = "all_account_info";
+    inline static const std::string SETUP_RECURRING_INVESTMENT = "setup_recurring_investment";
 };
 
 }

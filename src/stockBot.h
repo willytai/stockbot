@@ -10,6 +10,10 @@ namespace schwabcpp {
 class Client;
 }
 
+namespace spdlog {
+class logger;
+}
+
 namespace stockbot {
 
 class Bot
@@ -32,6 +36,7 @@ private:
     void                                stop();
 
     // -- Event handlers for the discord bot
+    void                                onDiscordBotLog(const dpp::log_t& event);
     void                                onDiscordBotReady(const dpp::ready_t& event);
     void                                onDiscordBotSlashCommand(const dpp::slashcommand_t& event);
 
@@ -43,6 +48,9 @@ private:
     std::mutex                          m_mutex;
     std::condition_variable             m_cv;
     bool                                m_shouldRun;
+
+    // -- Logging for dpp
+    std::shared_ptr<spdlog::logger>     m_dppLogger;
 };
 
 }

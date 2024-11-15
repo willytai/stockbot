@@ -14,6 +14,9 @@ public:
 
     // default turns off trace
     static void init(spdlog::level::level_enum logLevel = spdlog::level::debug);
+
+    static std::shared_ptr<spdlog::logger> createWithSharedSinks(const std::string& name);
+
     static inline std::shared_ptr<spdlog::logger> getLogger() { return __logger; }
 
 private:
