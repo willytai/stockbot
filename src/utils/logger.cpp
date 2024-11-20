@@ -32,7 +32,7 @@ void Logger::init(spdlog::level::level_enum logLevel) {
     spdlog::register_logger(__logger);
 }
 
-std::shared_ptr<spdlog::logger> Logger::createWithSharedSinks(const std::string& name)
+std::shared_ptr<spdlog::logger> Logger::createWithSharedSinksAndLevel(const std::string& name)
 {
     if (!__logger) return nullptr;
 
