@@ -74,6 +74,7 @@ private:
     std::mutex                          m_mutexOAuth;
     std::condition_variable             m_cvOAuth;
     std::string                         m_OAuthRedirectedUrl;
+    std::atomic<bool>                   m_authRequired;  // so that we can ignore authorize command when it is not required
 };
 
 }

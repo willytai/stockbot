@@ -29,6 +29,7 @@ static spdlog::level::level_enum to_spdlog_log_level(Bot::LogLevel level)
 Bot::Bot(const Spec& spec)
     : m_shouldRun(false)
     , m_reregisterCommands(spec.reregisterCommands)
+    , m_authRequired(false)
 {
     // logger for stockbot
     Logger::init(to_spdlog_log_level(spec.logLevel));
@@ -139,6 +140,9 @@ std::string Bot::onSchwabOAuthUrlRequest(const std::string& url,
                                          schwabcpp::Client::AuthRequestReason requestReason,
                                          int chancesLeft)
 {
+    // set flag
+    m_authRequired = true;
+
     std::string desc;
     switch (requestReason) {
         case schwabcpp::Client::AuthRequestReason::InitialSetup: {
@@ -187,6 +191,11 @@ std::string Bot::onSchwabOAuthUrlRequest(const std::string& url,
 
 void Bot::onSchwabOAuthComplete(schwabcpp::Client::AuthStatus status)
 {
+    // set flag
+    // note that this just means we are out of the auth flow
+    // it doesn't mean that auth succeeded
+    m_authRequired = false;
+
     dpp::embed embed = dpp::embed()
         .set_timestamp(time(0));
 
@@ -349,19 +358,25 @@ void Bot::onAuthorizeEvent(const dpp::slashcommand_t& event)
 {
     // this command is for the admin user, i.e. YOU! only
     if (event.command.usr.id == m_adminUserId) {
-        // retrieve the url
-        std::string url = std::get<std::string>(event.get_parameter("redirect_url"));
-        {
-            std::lock_guard lock(m_mutexOAuth);
-            m_OAuthRedirectedUrl = url;
+        // proceed if in auth flow
+        if (m_authRequired) {
+            // retrieve the url
+            std::string url = std::get<std::string>(event.get_parameter("redirect_url"));
+            {
+                std::lock_guard lock(m_mutexOAuth);
+                m_OAuthRedirectedUrl = url;
+            }
+        
+            LOG_INFO("Received redirected url: {}, notifying schwab client...", url);
+        
+            // notify the callback
+            m_cvOAuth.notify_one();
+        
+            event.reply(dpp::message("Authorizing schwab client...").set_flags(dpp::m_ephemeral));
+        } else {
+            // ignore if not
+            event.reply(dpp::message("Authorization not required at this time.").set_flags(dpp::m_ephemeral));
         }
-    
-        LOG_INFO("Received redirected url: {}, notifying schwab client...", url);
-    
-        // notify the callback
-        m_cvOAuth.notify_one();
-    
-        event.reply(dpp::message("Authorizing schwab client...").set_flags(dpp::m_ephemeral));
     } else {
         LOG_WARN("A non-admin user {} tried to use the {} command.", event.command.usr.global_name, command::Authorize::Name());
     
