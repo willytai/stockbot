@@ -42,6 +42,7 @@ DiscordBot::DiscordBot(const std::string& token,
     m_dbot = std::make_unique<dpp::cluster>(m_token);
     m_dbot->on_log(std::bind(&DiscordBot::onLog, this, std::placeholders::_1));
     m_dbot->on_slashcommand(std::bind(&DiscordBot::onSlashCommand, this, std::placeholders::_1));
+    m_dbot->on_form_submit(std::bind(&DiscordBot::onFormSubmit, this, std::placeholders::_1));
     m_dbot->on_ready(std::bind(&DiscordBot::onReady, this, std::placeholders::_1));
 
     LOG_INFO("Discord bot initialized.");
@@ -281,6 +282,14 @@ void DiscordBot::onSlashCommand(const dpp::slashcommand_t& event)
     dispatcher.dispatch<command::SetupRecurringInvestment>(std::bind(&DiscordBot::onSetupRecurringInvestmentEvent, this, std::placeholders::_1));
 }
 
+void DiscordBot::onFormSubmit(const dpp::form_submit_t& event)
+{
+    // TODO:
+    LOG_INFO("A form was submitted. Custom Id: {}", event.custom_id);
+
+    event.reply("Form received.");
+}
+
 // -- Slash command callbacks
 
 void DiscordBot::onPingEvent(const dpp::slashcommand_t& event)
@@ -357,22 +366,50 @@ void DiscordBot::onSetupRecurringInvestmentEvent(const dpp::slashcommand_t& even
 
     modal.add_component(
         dpp::component()
-            .set_label("Short type rammel")
-            .set_id("field_id")
+            .set_label("Ticker")
+            .set_id("field_ticker")
             .set_type(dpp::cot_text)
-            .set_placeholder("gumd")
-            .set_min_length(5)
-            .set_max_length(50)
+            .set_placeholder("NVDA")
             .set_text_style(dpp::text_short)
     );
 
     modal.add_row();
     modal.add_component(
         dpp::component()
-            .set_label("Ticker")
-            .set_id("field_ticker")
+            .set_label("Number of Shares")
+            .set_id("field_shares")
             .set_type(dpp::cot_text)
-            .set_placeholder("gumf")
+            .set_placeholder("5")
+            .set_text_style(dpp::text_short)
+    );
+
+    modal.add_row();
+    modal.add_component(
+        dpp::component()
+            .set_label("Frequency")
+            .set_id("field_frequency")
+            .set_type(dpp::cot_selectmenu)
+            .set_placeholder("Daily")
+            .set_text_style(dpp::text_short)
+    );
+
+    modal.add_row();
+    modal.add_component(
+        dpp::component()
+            .set_label("Trigger Threshold")
+            .set_id("field_triggerThreshold")
+            .set_type(dpp::cot_text)
+            .set_placeholder("2%")
+            .set_text_style(dpp::text_short)
+    );
+
+    modal.add_row();
+    modal.add_component(
+        dpp::component()
+            .set_label("Skip Threshold")
+            .set_id("field_skipThreshold")
+            .set_type(dpp::cot_text)
+            .set_placeholder("1%")
             .set_text_style(dpp::text_short)
     );
 
