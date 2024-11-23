@@ -1,4 +1,4 @@
-#include "stockBot.h"
+#include "app.h"
 #include "utils/logger.h"
 
 int main(int argc, char *argv[])
@@ -7,11 +7,11 @@ int main(int argc, char *argv[])
                               !strcmp(argv[1], "reregisterCommands");
 
     {
-        stockbot::Bot bot({
-            .logLevel = stockbot::Bot::LogLevel::Trace,
-            .reregisterCommands = reregisterCommands,
+        std::shared_ptr<stockbot::App> app = std::make_shared<stockbot::App>(stockbot::App::Spec{
+            .logLevel = stockbot::App::LogLevel::Trace,
+            .reregisterDiscordBotSlashCommands = reregisterCommands,
         });
-        bot.run();
+        app->run();
     }
 
     LOG_INFO("Program exited normally.");

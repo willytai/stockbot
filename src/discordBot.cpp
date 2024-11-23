@@ -1,161 +1,101 @@
-#include "stockBot.h"
+#include "discordBot.h"
+#include "app.h"
 #include "command/command.h"
-#include "spdlog/async.h"
-#include "spdlog/sinks/rotating_file_sink.h"
-#include "spdlog/sinks/stdout_color_sinks.h"
 #include "utils/logger.h"
 #include "nlohmann/json.hpp"
-#include "dpp/dpp.h"
 #include "schwabcpp/client.h"
-#include <fstream>
+
+// dpp
+#include "cluster.h"
+#include "colors.h"
+#include "once.h"
+
+// I want all the logs uses DiscordBot::m_botLogger
+#ifdef TARGET_LOGGER
+#undef TARGET_LOGGER
+#endif
+#define TARGET_LOGGER m_botLogger
 
 namespace stockbot {
 
 using json = nlohmann::json;
 using Timer = schwabcpp::Timer;
 
-namespace {
-
-static spdlog::level::level_enum to_spdlog_log_level(Bot::LogLevel level)
-{
-    switch(level) {
-        case Bot::LogLevel::Debug: return spdlog::level::debug;
-        case Bot::LogLevel::Trace: return spdlog::level::trace;
-    }
-}
-
-}
-
-Bot::Bot(const Spec& spec)
-    : m_shouldRun(false)
-    , m_reregisterCommands(spec.reregisterCommands)
+DiscordBot::DiscordBot(const std::string& token,
+                       const std::string& adminUserId,
+                       bool reregisterCommands,
+                       std::shared_ptr<App> app,
+                       std::shared_ptr<spdlog::logger> logger)
+    : m_reregisterCommands(reregisterCommands)
     , m_authRequired(false)
+    , m_token(token)
+    , m_adminUserId(adminUserId)
+    , m_botLogger(logger)
+    , m_app(app)
 {
-    // logger for stockbot
-    Logger::init(to_spdlog_log_level(spec.logLevel));
-
-    LOG_INFO("Initializing bot..");
-
-    // load credentials
-    std::ifstream file(spec.appCredentialPath);
-    if (file.is_open()) {
-        json credentialData;
-        file >> credentialData;
-
-        // bot token
-        if (credentialData.contains("bot_token")) {
-            m_token = credentialData["bot_token"];
-        } else {
-            LOG_FATAL("Discord bot token missing in credential file!!");
-        }
-
-        // admin info (this is the user the bot will be reporting to)
-        if (credentialData.contains("admin_user_id")) {
-            m_adminUserId = credentialData["admin_user_id"].get<std::string>();
-        } else {
-            LOG_FATAL("Admin user id missing in credential file!!");
-        }
-    } else {
-        LOG_FATAL("Unable to open the app credentials file: {}", spec.appCredentialPath.string());
-    }
-}
-
-Bot::~Bot()
-{
-    stop();
-}
-
-void Bot::run()
-{
-    // set the flag
-    m_shouldRun = true;
-
     // create a shared sink logger for the discord bot
-    m_dppLogger = Logger::createWithSharedSinksAndLevel("dpp");
+    m_dppLogger = Logger::createWithSharedSinksAndLevel("dpp", m_botLogger);
     // always debug level for this (trace shows too many stuffs)
     m_dppLogger->set_level(spdlog::level::debug);
 
     // create and start the discord bot
     m_dbot = std::make_unique<dpp::cluster>(m_token);
-    m_dbot->on_log(std::bind(&Bot::onDiscordBotLog, this, std::placeholders::_1));
-    m_dbot->on_slashcommand(std::bind(&Bot::onDiscordBotSlashCommand, this, std::placeholders::_1));
-    m_dbot->on_ready(std::bind(&Bot::onDiscordBotReady, this, std::placeholders::_1));
-    m_dbot->start(dpp::st_return);
+    m_dbot->on_log(std::bind(&DiscordBot::onLog, this, std::placeholders::_1));
+    m_dbot->on_slashcommand(std::bind(&DiscordBot::onSlashCommand, this, std::placeholders::_1));
+    m_dbot->on_ready(std::bind(&DiscordBot::onReady, this, std::placeholders::_1));
 
-    LOG_INFO("Discord bot started.");
+    LOG_INFO("Discord bot initialized.");
+}
 
-    // start the schwab client
-    // create a shared sink logger for client
-    m_client = std::make_unique<schwabcpp::Client>(schwabcpp::Client::Spec{
-        .oAuthUrlRequestCallback = std::bind(
-            &Bot::onSchwabOAuthUrlRequest,
-            this,
-            std::placeholders::_1,
-            std::placeholders::_2,
-            std::placeholders::_3
-        ),
-        .oAuthCompleteCallback = std::bind(
-            &Bot::onSchwabOAuthComplete,
-            this,
-            std::placeholders::_1
-        ),
-        .logger = Logger::createWithSharedSinksAndLevel("schwabcpp"),
-    });
-    m_client->startStreamer();
-
-    std::this_thread::sleep_for(std::chrono::seconds(10));
-
-    // TEST: testing pause resume
-    {
-        std::this_thread::sleep_for(std::chrono::seconds(5));
-        m_client->pauseStreamer();
-        std::this_thread::sleep_for(std::chrono::seconds(5));
-        m_client->resumeStreamer();
-    }
-
-    std::this_thread::sleep_for(std::chrono::seconds(10));
-
-    m_client->stopStreamer();
-
-    // block
-    std::unique_lock lock(m_mutex);
-    m_cv.wait(lock, [this] { return !m_shouldRun; });
-
+DiscordBot::~DiscordBot()
+{
     stop();
 }
 
-void Bot::stop()
+void DiscordBot::run()
 {
-    if (m_client) {
-        m_client.reset();
-    }
+    // start dpp, returns immediately
+    m_dbot->start(dpp::st_return);
 
+    LOG_INFO("Discord bot started.");
+}
+
+void DiscordBot::stop()
+{
     if (m_dbot) {
-        LOG_INFO("Killing discord bot..");
+        LOG_INFO("Stopping discord bot..");
         m_dbot.reset();
     }
 }
 
-std::string Bot::onSchwabOAuthUrlRequest(const std::string& url,
-                                         schwabcpp::Client::AuthRequestReason requestReason,
-                                         int chancesLeft)
+// -- Schwab client callbacks
+
+void DiscordBot::onSchwabClientEvent(schwabcpp::Event& event)
+{
+    schwabcpp::EventDispatcher dispatcher(event);
+
+    dispatcher.dispatch<schwabcpp::OAuthUrlRequestEvent>(std::bind(&DiscordBot::onSchwabClientOAuthUrlRequest, this, std::placeholders::_1));
+    dispatcher.dispatch<schwabcpp::OAuthCompleteEvent>(std::bind(&DiscordBot::onSchwabClientOAuthComplete, this, std::placeholders::_1));
+}
+
+bool DiscordBot::onSchwabClientOAuthUrlRequest(schwabcpp::OAuthUrlRequestEvent& event)
 {
     // set flag
     m_authRequired = true;
 
     std::string desc;
-    switch (requestReason) {
-        case schwabcpp::Client::AuthRequestReason::InitialSetup: {
+    switch (event.getReason()) {
+        case schwabcpp::OAuthUrlRequestEvent::Reason::InitialSetup: {
             desc = "To start the schwab client, please follow the link and authorize.\n"
                    "Send the redirected url with the /" + command::Authorize::Name() + " command after authorization.";
             break;
         }
-        case schwabcpp::Client::AuthRequestReason::RefreshTokenExpired: {
+        case schwabcpp::OAuthUrlRequestEvent::Reason::RefreshTokenExpired: {
             desc = "The refresh token has expired.\n"
                    "Please follow the link, reauthorize, and use the /" + command::Authorize::Name() + " command to send the redirected url to continue service.";
             break;
         }
-        case schwabcpp::Client::AuthRequestReason::PreviousAuthFailed: {
+        case schwabcpp::OAuthUrlRequestEvent::Reason::PreviousAuthFailed: {
             desc = "Failed to generate new tokens.\n"
                    "The redirected url expires rather fast. Make sure you send it within 30 seconds.\n"
                    "Please follow the link and reauthorize.";
@@ -167,7 +107,7 @@ std::string Bot::onSchwabOAuthUrlRequest(const std::string& url,
     dpp::embed embed = dpp::embed()
         .set_color(dpp::colors::brass)
         .set_title("Schwab Client OAuth Request")
-        .set_url(url)
+        .set_url(event.getAuthorizationUrl())
         .set_description(desc)
         .set_timestamp(time(0));
 
@@ -180,16 +120,18 @@ std::string Bot::onSchwabOAuthUrlRequest(const std::string& url,
         }
     });
 
-    // wait for command oauth redirected url
+    // wait for the user to use the slash comamnd to authorize
     std::unique_lock lock(m_mutexOAuth);
     m_OAuthRedirectedUrl.clear();
     m_cvOAuth.wait(lock, [this]{ return !m_OAuthRedirectedUrl.empty(); });
 
-    // send it back
-    return m_OAuthRedirectedUrl;
+    // reply to the event to send the url back
+    event.reply(m_OAuthRedirectedUrl);
+
+    return true;  // if we reach this point, the event is handled
 }
 
-void Bot::onSchwabOAuthComplete(schwabcpp::Client::AuthStatus status)
+bool DiscordBot::onSchwabClientOAuthComplete(schwabcpp::OAuthCompleteEvent& event)
 {
     // set flag
     // note that this just means we are out of the auth flow
@@ -199,15 +141,15 @@ void Bot::onSchwabOAuthComplete(schwabcpp::Client::AuthStatus status)
     dpp::embed embed = dpp::embed()
         .set_timestamp(time(0));
 
-    switch (status) {
-        case schwabcpp::Client::AuthStatus::Succeeded: {
+    switch (event.getStatus()) {
+        case schwabcpp::OAuthCompleteEvent::Status::Succeeded: {
             embed
                 .set_color(dpp::colors::green)
                 .set_title("OAuth Successful")
                 .set_description("Schwab client is online.");
             break;
         }
-        case schwabcpp::Client::AuthStatus::Failed: {
+        case schwabcpp::OAuthCompleteEvent::Status::Failed: {
             // TODO: add a flow to restart client when this happens
             embed
                 .set_color(dpp::colors::red)
@@ -215,7 +157,7 @@ void Bot::onSchwabOAuthComplete(schwabcpp::Client::AuthStatus status)
                 .set_description("Schwab client terminated.");
             break;
         }
-        case schwabcpp::Client::AuthStatus::NotRequired: {
+        case schwabcpp::OAuthCompleteEvent::Status::NotRequired: {
             embed
                 .set_color(dpp::colors::green)
                 .set_title("OAuth Not Required")
@@ -232,9 +174,13 @@ void Bot::onSchwabOAuthComplete(schwabcpp::Client::AuthStatus status)
             LOG_INFO("OAuth status sent to admin user.");
         }
     });
+
+    return true;  // always handled
 }
 
-void Bot::onDiscordBotLog(const dpp::log_t& event)
+// -- DPP callbacks
+
+void DiscordBot::onLog(const dpp::log_t& event)
 {
     switch (event.severity) {
         case dpp::ll_trace:
@@ -259,7 +205,7 @@ void Bot::onDiscordBotLog(const dpp::log_t& event)
     }
 }
 
-void Bot::onDiscordBotReady(const dpp::ready_t& event)
+void DiscordBot::onReady(const dpp::ready_t& event)
 {
     if (dpp::run_once<struct register_bot_commands>()) {
 
@@ -309,7 +255,7 @@ void Bot::onDiscordBotReady(const dpp::ready_t& event)
             std::for_each(commands.begin(), commands.end(), [](dpp::slashcommand& cmd){
                 cmd.set_dm_permission(true);
             });
-            m_dbot->global_bulk_command_create(commands, [](dpp::confirmation_callback_t confirmation) {
+            m_dbot->global_bulk_command_create(commands, [this](dpp::confirmation_callback_t confirmation) {
                 if (confirmation.is_error()) {
                     LOG_ERROR(
                         "Unable to create global bulk commands. Error: {} ({}).",
@@ -324,37 +270,35 @@ void Bot::onDiscordBotReady(const dpp::ready_t& event)
     }
 }
 
-void Bot::onDiscordBotSlashCommand(const dpp::slashcommand_t& event)
+void DiscordBot::onSlashCommand(const dpp::slashcommand_t& event)
 {
     SlashCommandDispatcher dispatcher(event);
 
-    dispatcher.dispatch<command::Ping>(std::bind(&Bot::onPingEvent, this, std::placeholders::_1));
-    dispatcher.dispatch<command::Kill>(std::bind(&Bot::onKillEvent, this, std::placeholders::_1));
-    dispatcher.dispatch<command::Authorize>(std::bind(&Bot::onAuthorizeEvent, this, std::placeholders::_1));
-    dispatcher.dispatch<command::AllAccountInfo>(std::bind(&Bot::onAllAccountInfoEvent, this, std::placeholders::_1));
-    dispatcher.dispatch<command::SetupRecurringInvestment>(std::bind(&Bot::onSetupRecurringInvestmentEvent, this, std::placeholders::_1));
+    dispatcher.dispatch<command::Ping>(std::bind(&DiscordBot::onPingEvent, this, std::placeholders::_1));
+    dispatcher.dispatch<command::Kill>(std::bind(&DiscordBot::onKillEvent, this, std::placeholders::_1));
+    dispatcher.dispatch<command::Authorize>(std::bind(&DiscordBot::onAuthorizeEvent, this, std::placeholders::_1));
+    dispatcher.dispatch<command::AllAccountInfo>(std::bind(&DiscordBot::onAllAccountInfoEvent, this, std::placeholders::_1));
+    dispatcher.dispatch<command::SetupRecurringInvestment>(std::bind(&DiscordBot::onSetupRecurringInvestmentEvent, this, std::placeholders::_1));
 }
 
 // -- Slash command callbacks
 
-void Bot::onPingEvent(const dpp::slashcommand_t& event)
+void DiscordBot::onPingEvent(const dpp::slashcommand_t& event)
 {
     event.reply("HI");
 }
 
-void Bot::onKillEvent(const dpp::slashcommand_t& event)
+void DiscordBot::onKillEvent(const dpp::slashcommand_t& event)
 {
-    LOG_INFO("Killing the bot...");
+    LOG_INFO("Kill requested.");
     
-    event.reply(dpp::message("Killing the bot..").set_flags(dpp::m_ephemeral));
-    {
-        std::lock_guard lock(m_mutex);
-        m_shouldRun = false;
-    }
-    m_cv.notify_all();
+    event.reply(dpp::message("Stopping the app...").set_flags(dpp::m_ephemeral), [this](auto) {
+        // stop the app after the message is sent
+        m_app->stop();
+    });
 }
 
-void Bot::onAuthorizeEvent(const dpp::slashcommand_t& event)
+void DiscordBot::onAuthorizeEvent(const dpp::slashcommand_t& event)
 {
     // this command is for the admin user, i.e. YOU! only
     if (event.command.usr.id == m_adminUserId) {
@@ -384,9 +328,9 @@ void Bot::onAuthorizeEvent(const dpp::slashcommand_t& event)
     }
 }
 
-void Bot::onAllAccountInfoEvent(const dpp::slashcommand_t& event)
+void DiscordBot::onAllAccountInfoEvent(const dpp::slashcommand_t& event)
 {
-    schwabcpp::AccountsSummaryMap summaryMap = m_client->accountSummary();
+    schwabcpp::AccountsSummaryMap summaryMap = m_app->getAccountSummary();
     
     dpp::embed embed = dpp::embed()
         .set_color(dpp::colors::cyan)
@@ -406,16 +350,33 @@ void Bot::onAllAccountInfoEvent(const dpp::slashcommand_t& event)
     event.reply(dpp::message(event.command.channel_id, embed).set_flags(dpp::m_ephemeral));
 }
 
-void Bot::onSetupRecurringInvestmentEvent(const dpp::slashcommand_t& event)
+void DiscordBot::onSetupRecurringInvestmentEvent(const dpp::slashcommand_t& event)
 {
     // TODO:
-    dpp::embed embed = dpp::embed()
-        .set_color(dpp::colors::red)
-        .set_title("Recurring Investment Setup")
-        .set_timestamp(time(0))
-        .add_field("THIS IS CURRENTLY UNDER DEVELOPMENT!!", "---");
-    
-    event.reply(dpp::message(event.command.channel_id, embed).set_flags(dpp::m_ephemeral));
+    dpp::interaction_modal_response modal("recurring_investment_form", "Recurring Investment Setup");
+
+    modal.add_component(
+        dpp::component()
+            .set_label("Short type rammel")
+            .set_id("field_id")
+            .set_type(dpp::cot_text)
+            .set_placeholder("gumd")
+            .set_min_length(5)
+            .set_max_length(50)
+            .set_text_style(dpp::text_short)
+    );
+
+    modal.add_row();
+    modal.add_component(
+        dpp::component()
+            .set_label("Ticker")
+            .set_id("field_ticker")
+            .set_type(dpp::cot_text)
+            .set_placeholder("gumf")
+            .set_text_style(dpp::text_short)
+    );
+
+    event.dialog(modal);
 }
 
 

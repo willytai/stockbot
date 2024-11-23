@@ -15,7 +15,7 @@ public:
     // default turns off trace
     static void init(spdlog::level::level_enum logLevel = spdlog::level::debug);
 
-    static std::shared_ptr<spdlog::logger> createWithSharedSinksAndLevel(const std::string& name);
+    static std::shared_ptr<spdlog::logger> createWithSharedSinksAndLevel(const std::string& name, std::shared_ptr<spdlog::logger> logger = nullptr);
 
     static inline std::shared_ptr<spdlog::logger> getLogger() { return __logger; }
 
@@ -26,12 +26,16 @@ private:
 
 }
 
-#define LOG_TRACE(...) ::stockbot::Logger::getLogger()->trace(__VA_ARGS__)
-#define LOG_DEBUG(...) ::stockbot::Logger::getLogger()->debug(__VA_ARGS__)
-#define LOG_WARN(...)  ::stockbot::Logger::getLogger()->warn(__VA_ARGS__)
-#define LOG_INFO(...)  ::stockbot::Logger::getLogger()->info(__VA_ARGS__)
-#define LOG_ERROR(...) ::stockbot::Logger::getLogger()->error(__VA_ARGS__)
-#define LOG_FATAL(...) ::stockbot::Logger::getLogger()->critical(__VA_ARGS__); exit(1);
+#ifndef TARGET_LOGGER
+#define TARGET_LOGGER ::stockbot::Logger::getLogger()
+#endif
+
+#define LOG_TRACE(...) TARGET_LOGGER->trace(__VA_ARGS__)
+#define LOG_DEBUG(...) TARGET_LOGGER->debug(__VA_ARGS__)
+#define LOG_WARN(...)  TARGET_LOGGER->warn(__VA_ARGS__)
+#define LOG_INFO(...)  TARGET_LOGGER->info(__VA_ARGS__)
+#define LOG_ERROR(...) TARGET_LOGGER->error(__VA_ARGS__)
+#define LOG_FATAL(...) TARGET_LOGGER->critical(__VA_ARGS__); exit(1);
 
 #define VERIFY(condition, ...) \
     if (!condition) { \

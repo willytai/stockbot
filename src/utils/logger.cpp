@@ -32,26 +32,28 @@ void Logger::init(spdlog::level::level_enum logLevel) {
     spdlog::register_logger(__logger);
 }
 
-std::shared_ptr<spdlog::logger> Logger::createWithSharedSinksAndLevel(const std::string& name)
+std::shared_ptr<spdlog::logger> Logger::createWithSharedSinksAndLevel(const std::string& name, std::shared_ptr<spdlog::logger> logger)
 {
-    if (!__logger) return nullptr;
+    std::shared_ptr<spdlog::logger> refLogger = logger ? logger : __logger;
 
-    auto sinks = __logger->sinks();
-    auto logger = std::make_shared<spdlog::async_logger>(
+    if (!refLogger) return nullptr;
+
+    auto sinks = refLogger->sinks();
+    auto newLogger = std::make_shared<spdlog::async_logger>(
         name,
         sinks.begin(),
         sinks.end(),
         spdlog::thread_pool(),
         spdlog::async_overflow_policy::block
     );
-    logger->set_pattern(PATTERN);
-    logger->set_level(__logger->level());
-    logger->debug("Logger '{}' Initialized.", logger->name());
-    logger->flush_on(spdlog::level::debug);
+    newLogger->set_pattern(PATTERN);
+    newLogger->set_level(refLogger->level());
+    newLogger->debug("Logger '{}' Initialized.", newLogger->name());
+    newLogger->flush_on(spdlog::level::debug);
 
-    spdlog::register_logger(logger);
+    spdlog::register_logger(newLogger);
 
-    return logger;
+    return newLogger;
 }
 
 }
