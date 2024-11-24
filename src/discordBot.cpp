@@ -1,7 +1,9 @@
 #include "discordBot.h"
 #include "app.h"
+#include "autoInvestment.h"
 #include "command/command.h"
 #include "utils/logger.h"
+#include "utils/utils.h"
 #include "nlohmann/json.hpp"
 #include "schwabcpp/client.h"
 
@@ -17,6 +19,17 @@
 #define TARGET_LOGGER m_botLogger
 
 namespace stockbot {
+
+namespace {
+
+static const std::string INVESTMENT_SETUP_FORM_ID("recurring_investment_form");
+static const std::string INVESTMENT_SETUP_FORM_TICKER_FIELD("field_ticker");
+static const std::string INVESTMENT_SETUP_FORM_SHARES_FIELD("field_shares");
+static const std::string INVESTMENT_SETUP_FORM_FREQUENCY_FIELD("field_frequency");
+static const std::string INVESTMENT_SETUP_FORM_TRIGGER_THRESHOLD_FIELD("field_triggerThreshold");
+static const std::string INVESTMENT_SETUP_FORM_SKIP_THRESHOLD_FIELD("field_skipThreshold");
+
+}
 
 using json = nlohmann::json;
 using Timer = schwabcpp::Timer;
@@ -38,7 +51,7 @@ DiscordBot::DiscordBot(const std::string& token,
     // always debug level for this (trace shows too many stuffs)
     m_dppLogger->set_level(spdlog::level::debug);
 
-    // create and start the discord bot
+    // configure the discord bot
     m_dbot = std::make_unique<dpp::cluster>(m_token);
     m_dbot->on_log(std::bind(&DiscordBot::onLog, this, std::placeholders::_1));
     m_dbot->on_slashcommand(std::bind(&DiscordBot::onSlashCommand, this, std::placeholders::_1));
@@ -284,22 +297,133 @@ void DiscordBot::onSlashCommand(const dpp::slashcommand_t& event)
 
 void DiscordBot::onFormSubmit(const dpp::form_submit_t& event)
 {
-    // TODO:
-    LOG_INFO("A form was submitted. Custom Id: {}", event.custom_id);
+    if (event.custom_id == INVESTMENT_SETUP_FORM_ID) {
+        LOG_INFO("Recurring investment form received from user id: {}.", event.command.usr.id.str());
 
-    event.reply("Form received.");
+        AutoInvestment investment;
+
+        // for holding the error messages
+        std::vector<std::string> errors;
+
+        // extract the data
+        // event.components is a vector of the row components
+        // event.components[i] is the components at row i
+        // event.components[i].components[j] is the jth component at the ith row
+        // the form can only have 1 component each row, so we are only intereseted in event.components[i].components[0]
+        for (const dpp::component& component: event.components) {
+            const dpp::component& comp = component.components[0];
+
+            if (comp.custom_id == INVESTMENT_SETUP_FORM_TICKER_FIELD) {
+                investment.ticker = std::get<std::string>(comp.value);
+                utils::strip(investment.ticker);
+                utils::toUpper(investment.ticker);
+            } else if (comp.custom_id == INVESTMENT_SETUP_FORM_SHARES_FIELD) {
+                try {
+                    // split the field value by "+"
+                    std::vector<std::string> list;
+                    utils::split(std::get<std::string>(comp.value), list, "+");
+
+                    // first one is the shares
+                    investment.shares = std::stoi(list[0]);
+
+                    // second one is the extras (optional)
+                    if (list.size() > 1) {
+                        investment.extras = std::stoi(list[1]);
+                    }
+                } catch (const std::exception& e) {
+                    errors.push_back("Unable to extract 'Number of Shares' field. Expected format: <shares>[+<extras>]. (Error: " + std::string(e.what()) + ")");
+                } catch (...) {
+                    LOG_ERROR("Unhandled error for {}", INVESTMENT_SETUP_FORM_SHARES_FIELD);
+                }
+            } else if (comp.custom_id == INVESTMENT_SETUP_FORM_FREQUENCY_FIELD) {
+                try {
+                    std::string freqString = std::get<std::string>(comp.value);
+                    utils::strip(freqString);
+                    utils::toLower(freqString);
+                    // set the frequency
+                    if (freqString == "daily") {
+                        investment.frequency = AutoInvestment::Daily;
+                    } else if (freqString == "weekly") {
+                        investment.frequency = AutoInvestment::Weekly;
+                    } else {
+                        throw std::invalid_argument("Unrecognized frequency string.");
+                    }
+                } catch (const std::exception& e) {
+                    errors.push_back("Unable to extract 'Frequency' field. Expected format: <daily|weekly>. (Error: " + std::string(e.what()) + ")");
+                } catch (...) {
+                    LOG_ERROR("Unhandled error for {}", INVESTMENT_SETUP_FORM_FREQUENCY_FIELD);
+                }
+            } else if (comp.custom_id == INVESTMENT_SETUP_FORM_TRIGGER_THRESHOLD_FIELD) {
+                try {
+                    std::string triggerThresholdString = std::get<std::string>(comp.value);
+                    investment.averageInThreshold = utils::parseAsPercentage(triggerThresholdString);
+                } catch (const std::exception& e) {
+                    errors.push_back("Unable to extract 'Trigger Threshold' field. Expected format: <number>[%]. (Error: " + std::string(e.what()) + ")");
+                } catch (...) {
+                    LOG_ERROR("Unhandled error for {}", INVESTMENT_SETUP_FORM_TRIGGER_THRESHOLD_FIELD);
+                }
+            } else if (comp.custom_id == INVESTMENT_SETUP_FORM_SKIP_THRESHOLD_FIELD) {
+                try {
+                    std::string skipThresholdString = std::get<std::string>(comp.value);
+                    investment.skipThreshold = utils::parseAsPercentage(skipThresholdString);
+                } catch (const std::exception& e) {
+                    errors.push_back("Unable to extract 'Skip Threshold' field. Expected format: <number>[%]. (Error: " + std::string(e.what()) + ")");
+                } catch (...) {
+                    LOG_ERROR("Unhandled error for {}", INVESTMENT_SETUP_FORM_SKIP_THRESHOLD_FIELD);
+                }
+            } else {
+                LOG_ERROR("Unrecognized form field: {}", comp.custom_id);
+            }
+        }
+
+        // continue if we are good
+        if (errors.empty()) {
+            // reset time stamp
+            investment.createdTime = clock::now().time_since_epoch().count();
+            investment.lastTriggerTime = 0;
+
+            LOG_DEBUG("Created auto investment: \n{}", json(investment).dump(4));
+
+            event.reply(dpp::message("Form received.").set_flags(dpp::m_ephemeral));
+
+            // callback into the app
+            m_app->registerAutoInvestment(investment);
+        } else {
+            // log the errors
+            std::string desc;
+            for (const std::string& error : errors) {
+                LOG_WARN("{}", error);
+                desc += "> _" + error + "_\n\n";
+            }
+
+            // notify the user
+            // TODO: add a resubmit button?
+            dpp::embed embed = dpp::embed()
+                .set_color(dpp::colors::red)
+                .set_title("Unable to Setup Investment")
+                .set_description(desc)
+                .set_timestamp(time(0));
+            event.reply(dpp::message(event.command.channel_id, embed).set_flags(dpp::m_ephemeral));
+        }
+    } else {
+        LOG_WARN("Received an unrecognized form, id: {}", event.custom_id);
+    }
 }
 
 // -- Slash command callbacks
 
+#define SLASH_COMMAND_TRACE(name, event) LOG_INFO("'{}' requested from user: {}", name, event.command.usr.format_username());
+
 void DiscordBot::onPingEvent(const dpp::slashcommand_t& event)
 {
+    SLASH_COMMAND_TRACE(command::Ping::Name(), event);
+
     event.reply("HI");
 }
 
 void DiscordBot::onKillEvent(const dpp::slashcommand_t& event)
 {
-    LOG_INFO("Kill requested.");
+    SLASH_COMMAND_TRACE(command::Kill::Name(), event);
     
     event.reply(dpp::message("Stopping the app...").set_flags(dpp::m_ephemeral), [this](auto) {
         // stop the app after the message is sent
@@ -309,6 +433,8 @@ void DiscordBot::onKillEvent(const dpp::slashcommand_t& event)
 
 void DiscordBot::onAuthorizeEvent(const dpp::slashcommand_t& event)
 {
+    SLASH_COMMAND_TRACE(command::Authorize::Name(), event);
+
     // this command is for the admin user, i.e. YOU! only
     if (event.command.usr.id == m_adminUserId) {
         // proceed if in auth flow
@@ -339,6 +465,8 @@ void DiscordBot::onAuthorizeEvent(const dpp::slashcommand_t& event)
 
 void DiscordBot::onAllAccountInfoEvent(const dpp::slashcommand_t& event)
 {
+    SLASH_COMMAND_TRACE(command::AllAccountInfo::Name(), event);
+
     schwabcpp::AccountsSummaryMap summaryMap = m_app->getAccountSummary();
     
     dpp::embed embed = dpp::embed()
@@ -361,13 +489,14 @@ void DiscordBot::onAllAccountInfoEvent(const dpp::slashcommand_t& event)
 
 void DiscordBot::onSetupRecurringInvestmentEvent(const dpp::slashcommand_t& event)
 {
-    // TODO:
-    dpp::interaction_modal_response modal("recurring_investment_form", "Recurring Investment Setup");
+    SLASH_COMMAND_TRACE(command::SetupRecurringInvestment::Name(), event);
+
+    dpp::interaction_modal_response modal(INVESTMENT_SETUP_FORM_ID, "Recurring Investment Setup");
 
     modal.add_component(
         dpp::component()
             .set_label("Ticker")
-            .set_id("field_ticker")
+            .set_id(INVESTMENT_SETUP_FORM_TICKER_FIELD)
             .set_type(dpp::cot_text)
             .set_placeholder("NVDA")
             .set_text_style(dpp::text_short)
@@ -377,7 +506,7 @@ void DiscordBot::onSetupRecurringInvestmentEvent(const dpp::slashcommand_t& even
     modal.add_component(
         dpp::component()
             .set_label("Number of Shares")
-            .set_id("field_shares")
+            .set_id(INVESTMENT_SETUP_FORM_SHARES_FIELD)
             .set_type(dpp::cot_text)
             .set_placeholder("5")
             .set_text_style(dpp::text_short)
@@ -387,7 +516,7 @@ void DiscordBot::onSetupRecurringInvestmentEvent(const dpp::slashcommand_t& even
     modal.add_component(
         dpp::component()
             .set_label("Frequency")
-            .set_id("field_frequency")
+            .set_id(INVESTMENT_SETUP_FORM_FREQUENCY_FIELD)
             .set_type(dpp::cot_selectmenu)
             .set_placeholder("Daily")
             .set_text_style(dpp::text_short)
@@ -397,7 +526,7 @@ void DiscordBot::onSetupRecurringInvestmentEvent(const dpp::slashcommand_t& even
     modal.add_component(
         dpp::component()
             .set_label("Trigger Threshold")
-            .set_id("field_triggerThreshold")
+            .set_id(INVESTMENT_SETUP_FORM_TRIGGER_THRESHOLD_FIELD)
             .set_type(dpp::cot_text)
             .set_placeholder("2%")
             .set_text_style(dpp::text_short)
@@ -407,7 +536,7 @@ void DiscordBot::onSetupRecurringInvestmentEvent(const dpp::slashcommand_t& even
     modal.add_component(
         dpp::component()
             .set_label("Skip Threshold")
-            .set_id("field_skipThreshold")
+            .set_id(INVESTMENT_SETUP_FORM_SKIP_THRESHOLD_FIELD)
             .set_type(dpp::cot_text)
             .set_placeholder("1%")
             .set_text_style(dpp::text_short)

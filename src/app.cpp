@@ -1,5 +1,6 @@
 #include "app.h"
 #include "discordBot.h"
+#include "investmentManager.h"
 #include "utils/logger.h"
 #include "nlohmann/json.hpp"
 #include <fstream>
@@ -68,9 +69,10 @@ App::~App()
 
 void App::run()
 {
-    // create loggers with same sink but different tags for the discord bot and schwab client
+    // create loggers with same sink but different tags for the discord bot, schwab client, and investment manager
     std::shared_ptr<spdlog::logger> discordBotLogger = Logger::createWithSharedSinksAndLevel("DiscordBot");
     std::shared_ptr<spdlog::logger> schwabClientLogger = Logger::createWithSharedSinksAndLevel("SchwabClient");
+    std::shared_ptr<spdlog::logger> investmentManagerLogger = Logger::createWithSharedSinksAndLevel("InvestmentManager");
 
     // discord bot
     m_discordBot = std::make_unique<DiscordBot>(
@@ -89,6 +91,11 @@ void App::run()
     );
     // custom callback for the schwab client
     m_schwabClient->setEventCallback(std::bind(&App::onSchwabClientEvent, shared_from_this(), std::placeholders::_1));
+
+    // investment manager
+    m_investmentManager = std::make_unique<InvestmentManager>(
+        investmentManagerLogger
+    );
 
     // set the flag
     m_shouldRun = true;
@@ -120,7 +127,8 @@ void App::run()
     std::unique_lock lock(m_mutex);
     m_cv.wait(lock, [this] { return !m_shouldRun; });
 
-    // release these two
+    // release these
+    m_investmentManager.reset();
     m_schwabClient.reset();
     m_discordBot.reset();
 }
@@ -135,6 +143,12 @@ void App::stop()
     m_cv.notify_all();
 }
 
+void App::registerAutoInvestment(const AutoInvestment& investment)
+{
+    // TODO:
+    NOTIMPLEMENTEDERROR;
+}
+
 void App::onSchwabClientEvent(schwabcpp::Event& event)
 {
     // asking the discord bot to handle them first
@@ -143,6 +157,7 @@ void App::onSchwabClientEvent(schwabcpp::Event& event)
     // maybe the app can do some default handling?
     if (!event.getHandled()) {
         // TODO:
+        NOTIMPLEMENTEDERROR;
     }
 }
 

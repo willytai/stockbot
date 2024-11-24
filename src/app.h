@@ -1,3 +1,4 @@
+#include "autoInvestment.h"
 #include "schwabcpp/event/eventBase.h"
 #include "schwabcpp/schema/accountSummary.h"
 #include <filesystem>
@@ -9,6 +10,7 @@ class Client;
 namespace stockbot {
 
 class DiscordBot;
+class InvestmentManager;
 
 class App : public std::enable_shared_from_this<App>
 {
@@ -25,7 +27,7 @@ public:
     };
 
     App(const Spec& spec);
-    ~App();
+    virtual ~App();
 
     void                                run();
 
@@ -37,11 +39,13 @@ private:
     // -- APIs for the discord bot to call
     friend class DiscordBot;
     schwabcpp::AccountsSummaryMap       getAccountSummary();
+    void                                registerAutoInvestment(const AutoInvestment& investment);
     void                                stop();
 
 private:
     std::unique_ptr<DiscordBot>         m_discordBot;
     std::unique_ptr<schwabcpp::Client>  m_schwabClient;
+    std::unique_ptr<InvestmentManager>  m_investmentManager;
 
     // -- State Management
     std::mutex                          m_mutex;
