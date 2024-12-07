@@ -31,6 +31,9 @@ public:
 
     void                                run();
 
+    // -- Accessors
+    const std::vector<std::string>&     getLinkedAccounts() const { return m_linkedAccounts; }
+
 private:
     // -- Schwab client callback
     void                                onSchwabClientEvent(schwabcpp::Event& event);
@@ -39,7 +42,8 @@ private:
     // -- APIs for the discord bot to call
     friend class DiscordBot;
     schwabcpp::AccountsSummaryMap       getAccountSummary();
-    void                                registerAutoInvestment(const AutoInvestment& investment);
+    void                                addPendingAutoInvestment(AutoInvestment&& investment);
+    void                                linkAndRegisterAutoInvestment(const std::string& investmentId, const std::vector<std::string>& accounts);
     void                                stop();
 
 private:
@@ -58,6 +62,9 @@ private:
     std::string                         m_schwabKey;
     std::string                         m_schwabSecret;
     bool                                m_reregisterDiscordBotSlashCommands;
+
+    // -- Linked Accounts
+    std::vector<std::string>            m_linkedAccounts;
 };
 
 }

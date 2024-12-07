@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.16)
 
 project(stockbot)
 
-add_compile_definitions(DPP_CORO)
+add_compile_definitions(_GNU_SOURCE)
 
 set(DISABLE_IN_SOURCE_BUILD ON)
 set(CMAKE_CXX_STANDARD 20)

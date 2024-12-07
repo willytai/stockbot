@@ -17,7 +17,8 @@ public:
 
     void                                run();
 
-    void                                registerInvestment(const AutoInvestment& investment);
+    void                                addPendingInvestment(AutoInvestment&& investment);
+    void                                linkAndRegisterAutoInvestment(const std::string& investmentId, const std::vector<std::string>& accounts);
 
 private:
     void                                stop();
@@ -26,8 +27,13 @@ private:
     void                                load();
 
 private:
-    std::vector<AutoInvestment>         m_investments;
-    std::queue<AutoInvestment>          m_pendingRegistreation;
+    std::vector<AutoInvestment>         m_activeInvestments;    // thread safe
+    std::queue<AutoInvestment>          m_registrationQueue;    // thread safe
+    std::mutex                          m_mutexV;
+    std::mutex                          m_mutexQ;
+
+    std::unordered_map<std::string, AutoInvestment>
+                                        m_pendingRegistration;  // not thread safe, should be access from only one thread
 
     std::shared_ptr<spdlog::logger>     m_logger;
 };

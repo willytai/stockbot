@@ -7,7 +7,24 @@ std::string AutoInvestment::freq_to_string(AutoInvestment::Frequency freq)
     switch (freq) {
         case AutoInvestment::Daily:  return "Daily";
         case AutoInvestment::Weekly: return "Weekly";
+
+        case AutoInvestment::Unknown: return "Unknown";
     }
+}
+
+AutoInvestment::Frequency AutoInvestment::string_to_frequency(const std::string& str)
+{
+    AutoInvestment::Frequency result;
+
+    if (str == "Daily") {
+        result = AutoInvestment::Daily;
+    } else if (str == "Weekly") {
+        result = AutoInvestment::Weekly;
+    } else {
+        result = AutoInvestment::Unknown;
+    }
+
+    return result;
 }
 
 // void AutoInvestment::to_json(json& j, const AutoInvestment& self)

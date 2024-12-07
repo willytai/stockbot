@@ -7,6 +7,10 @@
 #include "nlohmann/json.hpp"
 #include "schwabcpp/client.h"
 
+#include <boost/uuid/uuid.hpp>
+#include <boost/uuid/uuid_io.hpp>
+#include <boost/uuid/uuid_generators.hpp>
+
 // dpp
 #include "cluster.h"
 #include "colors.h"
@@ -33,6 +37,7 @@ static const std::string INVESTMENT_SETUP_FORM_SKIP_THRESHOLD_FIELD("field_skipT
 
 using json = nlohmann::json;
 using Timer = schwabcpp::Timer;
+namespace uuids = boost::uuids;
 
 DiscordBot::DiscordBot(const std::string& token,
                        const std::string& adminUserId,
@@ -56,6 +61,7 @@ DiscordBot::DiscordBot(const std::string& token,
     m_dbot->on_log(std::bind(&DiscordBot::onLog, this, std::placeholders::_1));
     m_dbot->on_slashcommand(std::bind(&DiscordBot::onSlashCommand, this, std::placeholders::_1));
     m_dbot->on_form_submit(std::bind(&DiscordBot::onFormSubmit, this, std::placeholders::_1));
+    m_dbot->on_select_click(std::bind(&DiscordBot::onSelectClick, this, std::placeholders::_1));
     m_dbot->on_ready(std::bind(&DiscordBot::onReady, this, std::placeholders::_1));
 
     LOG_INFO("Discord bot initialized.");
@@ -88,7 +94,8 @@ void DiscordBot::onSchwabClientEvent(schwabcpp::Event& event)
 {
     schwabcpp::EventDispatcher dispatcher(event);
 
-    dispatcher.dispatch<schwabcpp::OAuthUrlRequestEvent>(std::bind(&DiscordBot::onSchwabClientOAuthUrlRequest, this, std::placeholders::_1));
+    if (!dispatcher.dispatch<schwabcpp::OAuthUrlRequestEvent>(std::bind(&DiscordBot::onSchwabClientOAuthUrlRequest, this, std::placeholders::_1))) {
+    }
     dispatcher.dispatch<schwabcpp::OAuthCompleteEvent>(std::bind(&DiscordBot::onSchwabClientOAuthComplete, this, std::placeholders::_1));
 }
 
@@ -137,12 +144,20 @@ bool DiscordBot::onSchwabClientOAuthUrlRequest(schwabcpp::OAuthUrlRequestEvent& 
     // wait for the user to use the slash comamnd to authorize
     std::unique_lock lock(m_mutexOAuth);
     m_OAuthRedirectedUrl.clear();
-    m_cvOAuth.wait(lock, [this]{ return !m_OAuthRedirectedUrl.empty(); });
+    m_cvOAuth.wait(lock);
 
-    // reply to the event to send the url back
-    event.reply(m_OAuthRedirectedUrl);
+    if (m_OAuthRedirectedUrl.empty()) {
+        // NOTE:
+        // we were woken up but the url request wasn't handled (kill command issued)
+        // to prevent schwabcpp's default handler from invoking and blocking the exiting process, setting
+        // the reply to some rubbish string
+        event.reply("KILL");
+    } else {
+        // reply to the event to send the url back (this doesn't block)
+        event.reply(m_OAuthRedirectedUrl);
+    }
 
-    return true;  // if we reach this point, the event is handled
+    return true;  // always handles this event
 }
 
 bool DiscordBot::onSchwabClientOAuthComplete(schwabcpp::OAuthCompleteEvent& event)
@@ -381,13 +396,32 @@ void DiscordBot::onFormSubmit(const dpp::form_submit_t& event)
             // reset time stamp
             investment.createdTime = clock::now().time_since_epoch().count();
             investment.lastTriggerTime = 0;
+            // assign an unique id
+            investment.id = uuids::to_string(uuids::random_generator_mt19937()());
 
-            LOG_DEBUG("Created auto investment: \n{}", json(investment).dump(4));
+            // ask the user which accounts to apply to
+            dpp::message msg("Select the account(s) to apply the " + investment.ticker + " recurring investment");
+            dpp::component options = dpp::component()
+                                         .set_type(dpp::cot_selectmenu)
+                                         .set_placeholder("Select the account(s)")
+                                         .set_max_values(m_app->getLinkedAccounts().size())
+                                         .set_id(investment.id);
+            for (const std::string& account : m_app->getLinkedAccounts()) {
+                options.add_select_option(dpp::select_option(account, account));
+            }
+            msg.add_component(
+                dpp::component().add_component(
+                    options
+                )
+            );
 
-            event.reply(dpp::message("Form received.").set_flags(dpp::m_ephemeral));
+            LOG_DEBUG("Created pending auto investment: \n{}", json(investment).dump(4));
+
+            event.reply(msg.set_flags(dpp::m_ephemeral));
 
             // callback into the app
-            m_app->registerAutoInvestment(investment);
+            // this is a 'half created' investment, will fully register it once the accounts info is set
+            m_app->addPendingAutoInvestment(std::move(investment));
         } else {
             // log the errors
             std::string desc;
@@ -410,6 +444,21 @@ void DiscordBot::onFormSubmit(const dpp::form_submit_t& event)
     }
 }
 
+void DiscordBot::onSelectClick(const dpp::select_click_t& event)
+{
+    // NOTE: currently, this only triggers on investment account selection
+
+    // link and register
+    m_app->linkAndRegisterAutoInvestment(event.custom_id, event.values);
+
+    // notify
+    std::string msg = "Recurring investment registered for account(s):";
+    for (const std::string& val : event.values) {
+        msg += " " + val;
+    }
+    event.reply(dpp::message(msg).set_flags(dpp::m_ephemeral));
+}
+
 // -- Slash command callbacks
 
 #define SLASH_COMMAND_TRACE(name, event) LOG_INFO("'{}' requested from user: {}", name, event.command.usr.format_username());
@@ -426,6 +475,8 @@ void DiscordBot::onKillEvent(const dpp::slashcommand_t& event)
     SLASH_COMMAND_TRACE(command::Kill::Name(), event);
     
     event.reply(dpp::message("Stopping the app...").set_flags(dpp::m_ephemeral), [this](auto) {
+        // wake the blocking thread
+        m_cvOAuth.notify_all();
         // stop the app after the message is sent
         m_app->stop();
     });

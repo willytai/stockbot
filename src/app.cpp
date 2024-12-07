@@ -105,6 +105,9 @@ void App::run()
 
     // connect schwab client (this is sync)
     if (m_schwabClient->connect()) {
+        // keep a copy of the linked accounts
+        m_linkedAccounts = m_schwabClient->getLinkedAccounts();
+
         // // TEST: testing some calls here
         // m_schwabClient->startStreamer();
         //
@@ -121,7 +124,11 @@ void App::run()
         // std::this_thread::sleep_for(std::chrono::seconds(10));
         //
         // m_schwabClient->stopStreamer();
+
+        // start the investment manager
+        m_investmentManager->run();
     }
+
 
     // block
     std::unique_lock lock(m_mutex);
@@ -143,10 +150,14 @@ void App::stop()
     m_cv.notify_all();
 }
 
-void App::registerAutoInvestment(const AutoInvestment& investment)
+void App::addPendingAutoInvestment(AutoInvestment&& investment)
 {
-    // TODO:
-    NOTIMPLEMENTEDERROR;
+    m_investmentManager->addPendingInvestment(std::move(investment));
+}
+
+void App::linkAndRegisterAutoInvestment(const std::string& investmentId, const std::vector<std::string>& accounts)
+{
+    m_investmentManager->linkAndRegisterAutoInvestment(investmentId, accounts);
 }
 
 void App::onSchwabClientEvent(schwabcpp::Event& event)

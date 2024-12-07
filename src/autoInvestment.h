@@ -11,11 +11,17 @@ using clock = schwabcpp::clock;
 
 struct AutoInvestment {
 
+    std::string   id;
     std::string   ticker;
+
+    std::vector<std::string>
+                  accounts;
 
     enum Frequency {
         Daily,
         Weekly,
+
+        Unknown,
     }               frequency;
 
     int             shares;   // # of shares to buy
@@ -35,13 +41,16 @@ static void from_json(const json& j, AutoInvestment& data);
 
 private:
     static std::string freq_to_string(Frequency freq);
+    static Frequency string_to_frequency(const std::string& str);
 };
 
 // linker is having a seizure, it doesn't link when I put this in the cpp file (wtf...)
 inline void AutoInvestment::to_json(json& j, const AutoInvestment& self)
 {
     j = json {
+        {"id", self.id},
         {"ticker", self.ticker},
+        {"accounts", self.accounts},
         {"frequency", freq_to_string(self.frequency)},
         {"shares", self.shares},
         {"extras", self.extras},
@@ -56,8 +65,14 @@ inline void AutoInvestment::to_json(json& j, const AutoInvestment& self)
 
 inline void AutoInvestment::from_json(const json& j, AutoInvestment& data)
 {
+    j.at("id").get_to(data.id);
     j.at("ticker").get_to(data.ticker);
-    j.at("frequency").get_to(data.frequency);
+    j.at("accounts").get_to(data.accounts);
+
+    std::string freqStr;
+    j.at("frequency").get_to(freqStr);
+    data.frequency = string_to_frequency(freqStr);
+
     j.at("shares").get_to(data.shares);
     j.at("extras").get_to(data.extras);
     j.at("average_in_threshold").get_to(data.averageInThreshold);

@@ -42,6 +42,7 @@ private:
     void                                onReady(const dpp::ready_t& event);
     void                                onSlashCommand(const dpp::slashcommand_t& event);
     void                                onFormSubmit(const dpp::form_submit_t& event);
+    void                                onSelectClick(const dpp::select_click_t& event);
 
     // -- Slash command handlers
     void                                onPingEvent(const dpp::slashcommand_t& event);
