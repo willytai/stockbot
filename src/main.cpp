@@ -15,6 +15,7 @@ void onSignal(int sig)
     if (MAIN_THREAD_ID == std::this_thread::get_id()) {
         std::cerr << " (main thread)";
     }
+    std::cerr << " received signal " << sig;
     std::cerr << std::endl;
     std::cerr << boost::stacktrace::stacktrace();
     ::raise(SIGABRT);

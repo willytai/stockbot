@@ -1,6 +1,7 @@
 #include "app.h"
 #include "discordBot.h"
 #include "investmentManager.h"
+#include "taskManager.h"
 #include "utils/logger.h"
 #include "nlohmann/json.hpp"
 #include <fstream>
@@ -11,10 +12,12 @@ using json = nlohmann::json;
 
 static spdlog::level::level_enum to_spdlog_log_level(App::LogLevel level)
 {
-    switch(level) {
+    switch (level) {
         case App::LogLevel::Debug: return spdlog::level::debug;
         case App::LogLevel::Trace: return spdlog::level::trace;
     }
+
+    return spdlog::level::debug;
 }
 
 App::App(const Spec& spec)
@@ -73,6 +76,7 @@ void App::run()
     std::shared_ptr<spdlog::logger> discordBotLogger = Logger::createWithSharedSinksAndLevel("DiscordBot");
     std::shared_ptr<spdlog::logger> schwabClientLogger = Logger::createWithSharedSinksAndLevel("SchwabClient");
     std::shared_ptr<spdlog::logger> investmentManagerLogger = Logger::createWithSharedSinksAndLevel("InvestmentManager");
+    std::shared_ptr<spdlog::logger> taskManagerLogger = Logger::createWithSharedSinksAndLevel("TaskManager");
 
     // discord bot
     m_discordBot = std::make_unique<DiscordBot>(
@@ -94,7 +98,14 @@ void App::run()
 
     // investment manager
     m_investmentManager = std::make_unique<InvestmentManager>(
+        shared_from_this(),
         investmentManagerLogger
+    );
+
+    // task manager
+    m_taskManager = std::make_unique<TaskManager>(
+        2,  // pool size
+        taskManagerLogger
     );
 
     // set the flag
@@ -105,11 +116,26 @@ void App::run()
 
     // connect schwab client (this is sync)
     if (m_schwabClient->connect()) {
-        // keep a copy of the linked accounts
-        m_linkedAccounts = m_schwabClient->getLinkedAccounts();
+        // keep a copy of some account info
+        schwabcpp::UserPreference userPreference = m_schwabClient->getUserPreference();
+        for (const schwabcpp::UserPreference::Account& account : userPreference.accounts) {
+            m_linkedAccounts.push_back({
+                .accountNumber = account.accountNumber,
+                .displayAcctId = account.displayAcctId,
+                .nickName = account.nickName,
+                .primaryAccount = account.primaryAccount,
+            });
+        }
+
+        // the streamer is constructed after a successful connection, the data handler has to be set here to take effect
+        m_schwabClient->setStreamerDataHandler(std::bind(&App::streamerDataHandler, shared_from_this(), std::placeholders::_1));
+
+        // start the streamer
+        // TODO: maybe start the streamer after the first sub request arrives
+        //       If you start the streamer with no subscriptions, it's gonna disconnect automatically after a few seconds.
+        m_schwabClient->startStreamer();
 
         // // TEST: testing some calls here
-        // m_schwabClient->startStreamer();
         //
         // std::this_thread::sleep_for(std::chrono::seconds(10));
         //
@@ -127,6 +153,9 @@ void App::run()
 
         // start the investment manager
         m_investmentManager->run();
+
+        // start the task manager
+        m_taskManager->run();
     }
 
 
@@ -135,6 +164,7 @@ void App::run()
     m_cv.wait(lock, [this] { return !m_shouldRun; });
 
     // release these
+    m_taskManager.reset();
     m_investmentManager.reset();
     m_schwabClient.reset();
     m_discordBot.reset();
@@ -172,10 +202,69 @@ void App::onSchwabClientEvent(schwabcpp::Event& event)
     }
 }
 
+void App::streamerDataHandler(const std::string& data)
+{
+    if (isMarketOpen()) {
+        if (!data.empty()) {
+            m_investmentManager->enqueueStreamData(data);
+        } else {
+            LOG_DEBUG("Empty stream data.");
+        }
+    } else {
+        LOG_DEBUG("Market closed.");
+    }
+}
+
 schwabcpp::AccountsSummaryMap
 App::getAccountSummary()
 {
     return m_schwabClient ? m_schwabClient->accountSummary() : schwabcpp::AccountsSummaryMap{};
+}
+
+void App::subscribeTickersToStream(const std::vector<std::string>& tickers)
+{
+    m_schwabClient->subscribeLevelOneEquities(
+        tickers,
+        {
+            schwabcpp::StreamerField::LevelOneEquity::HighPrice,
+            schwabcpp::StreamerField::LevelOneEquity::LowPrice,
+            schwabcpp::StreamerField::LevelOneEquity::LastPrice,
+            schwabcpp::StreamerField::LevelOneEquity::NetPercentChange,
+        }
+    );
+}
+
+void App::registerTask(std::function<void()> task)
+{
+    m_taskManager->addTask(task);
+}
+
+bool App::isMarketOpen() const
+{
+    return true;
+    using clock = schwabcpp::clock;
+
+    // now
+    auto now = clock::now();
+
+    // Use a specific time zone
+    auto tz = std::chrono::locate_zone("America/New_York");
+    auto localTime = std::chrono::zoned_time{tz, now}.get_local_time();
+    auto timeInDays = std::chrono::floor<std::chrono::days>(localTime);
+    auto timeOfDay = std::chrono::floor<std::chrono::seconds>(localTime - timeInDays);
+
+    // Extract hour and minute
+    auto localHMS = std::chrono::hh_mm_ss<std::chrono::seconds>(timeOfDay);
+    int currentHour = localHMS.hours().count();
+    int currentMinute = localHMS.minutes().count();
+
+    // Get the day of the week (0 = Monday, ..., 6 = Sunday)
+    auto weekday = std::chrono::weekday{timeInDays};
+
+    // Market is open from 9:30 AM to 4:00 PM ET on weekdays
+    return (currentHour > 9 || (currentHour == 9 && currentMinute >= 30))
+        && (currentHour < 16)
+        && (weekday != std::chrono::Saturday && weekday != std::chrono::Sunday);
 }
 
 }

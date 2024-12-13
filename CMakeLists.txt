@@ -20,8 +20,8 @@ include_directories(
     src
     external/schwabcpp/include
     external/schwabcpp/external/spdlog/include
-    external/schwabcpp/external/nlohmann_json/include
     external/DPP/include
+    external/nlohmann_json/include
     ${Boost_INCLUDE_DIR}
 )
 
@@ -32,4 +32,5 @@ target_link_libraries(stockbot PRIVATE
     schwabcpp
     dpp
     ${Boost_LIBRARIES}
+    nlohmann_json::nlohmann_json
 )

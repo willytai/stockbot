@@ -2,6 +2,7 @@
 #include "schwabcpp/event/eventBase.h"
 #include "schwabcpp/schema/accountSummary.h"
 #include <filesystem>
+#include <condition_variable>
 
 namespace schwabcpp {
 class Client;
@@ -11,9 +12,16 @@ namespace stockbot {
 
 class DiscordBot;
 class InvestmentManager;
+class TaskManager;
 
 class App : public std::enable_shared_from_this<App>
 {
+    struct AccountInfo {
+        std::string accountNumber;
+        std::string displayAcctId;
+        std::string nickName;
+        bool        primaryAccount = false;
+    };
 public:
     enum class LogLevel : char {
         Debug,
@@ -32,11 +40,12 @@ public:
     void                                run();
 
     // -- Accessors
-    const std::vector<std::string>&     getLinkedAccounts() const { return m_linkedAccounts; }
+    const std::vector<AccountInfo>&     getLinkedAccounts() const { return m_linkedAccounts; }
 
 private:
-    // -- Schwab client callback
+    // -- Schwab client callbacks
     void                                onSchwabClientEvent(schwabcpp::Event& event);
+    void                                streamerDataHandler(const std::string& data);
 
 private:
     // -- APIs for the discord bot to call
@@ -47,9 +56,20 @@ private:
     void                                stop();
 
 private:
+    // -- APIs for the investment manager to call
+    friend class InvestmentManager;
+    void                                subscribeTickersToStream(const std::vector<std::string>& tickers);
+    void                                registerTask(std::function<void()> task);
+
+private:
+    // -- Convenience helpers
+    bool                                isMarketOpen() const;
+
+private:
     std::unique_ptr<DiscordBot>         m_discordBot;
     std::unique_ptr<schwabcpp::Client>  m_schwabClient;
     std::unique_ptr<InvestmentManager>  m_investmentManager;
+    std::unique_ptr<TaskManager>        m_taskManager;
 
     // -- State Management
     std::mutex                          m_mutex;
@@ -64,7 +84,7 @@ private:
     bool                                m_reregisterDiscordBotSlashCommands;
 
     // -- Linked Accounts
-    std::vector<std::string>            m_linkedAccounts;
+    std::vector<AccountInfo>            m_linkedAccounts;
 };
 
 }

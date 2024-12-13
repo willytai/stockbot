@@ -406,8 +406,15 @@ void DiscordBot::onFormSubmit(const dpp::form_submit_t& event)
                                          .set_placeholder("Select the account(s)")
                                          .set_max_values(m_app->getLinkedAccounts().size())
                                          .set_id(investment.id);
-            for (const std::string& account : m_app->getLinkedAccounts()) {
-                options.add_select_option(dpp::select_option(account, account));
+            for (const auto& account : m_app->getLinkedAccounts()) {
+                options.add_select_option(
+                    dpp::select_option(
+                        account.displayAcctId,
+                        account.accountNumber,
+                        account.primaryAccount ? account.nickName + " (primary)"
+                                               : account.nickName
+                    )
+                );
             }
             msg.add_component(
                 dpp::component().add_component(
@@ -448,7 +455,7 @@ void DiscordBot::onSelectClick(const dpp::select_click_t& event)
 {
     // NOTE: currently, this only triggers on investment account selection
 
-    // link and register
+    // link and register (thus is async)
     m_app->linkAndRegisterAutoInvestment(event.custom_id, event.values);
 
     // notify

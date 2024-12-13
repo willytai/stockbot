@@ -18,7 +18,7 @@ void Logger::init(spdlog::level::level_enum logLevel) {
         std::make_shared<spdlog::sinks::rotating_file_sink_mt>("stockbot.log", 1024 * 1024 * 5, 10),
     };
     __logger = std::make_shared<spdlog::async_logger>(
-        "stockbot",
+        "App",
         sinks.begin(),
         sinks.end(),
         spdlog::thread_pool(),
